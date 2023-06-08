@@ -1,8 +1,13 @@
-{% macro funnel(steps=none, event_stream=none, start_date=none, end_date=none) %}
-  {{ return(adapter.dispatch('funnel','dbt_product_analytics')(steps, event_stream, start_date, end_date)) }}
+{% macro funnel(steps=none, event_stream=none, start_date=none, end_date=none, time_limits=none) %}
+  {% if time_limits is not none and (
+    (time_limits | length) != ((steps | length) - 1)
+  ) %}
+    {{ exceptions.raise_compiler_error("There are " ~ steps | length ~ " steps, and " ~ time_limits | length ~ " time limits, but expected " ~ ((steps | length) - 1) ~ " time limits") }}
+  {% endif %}
+  {{ return(adapter.dispatch('funnel','dbt_product_analytics')(steps, event_stream, start_date, end_date, time_limits)) }}
 {% endmacro %}
 
-{% macro default__funnel(steps, event_stream, start_date, end_date) %}
+{% macro default__funnel(steps, event_stream, start_date, end_date, time_limits) %}
   with event_stream as {{ dbt_product_analytics._select_event_stream(event_stream, start_date, end_date) }}
   {% for step in steps %}
     , event_stream_step_{{ loop.index }} as (
@@ -13,6 +18,10 @@
           on event_stream.user_id = previous_events.user_id
           and previous_events.event_type = '{{ loop.previtem }}'
           and previous_events.event_date <= event_stream.event_date
+          {% set time_limit = time_limits[loop.index - 2] if time_limits is not none else none %}
+          {% if time_limit is not none %}
+          and event_stream.event_date <= previous_events.event_date + interval {{ time_limit }}
+          {% endif %}
       {% endif %}
       where event_stream.event_type = '{{ step }}'
     )
