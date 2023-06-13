@@ -11,7 +11,14 @@
   with event_stream as {{ dbt_product_analytics._select_event_stream(event_stream, start_date, end_date) }}
   {% for step in steps %}
     , event_stream_step_{{ loop.index }} as (
-      select event_stream.* 
+      select
+        event_stream.*,
+        {% if loop.index > 1 %}
+          event_stream.event_date - previous_events.event_date as time_elapsed
+        {% else %}
+          cast(null as interval) as time_elapsed
+        {% endif %}
+        
       from event_stream
       {% if loop.index > 1 %}
         inner join event_stream_step_{{ loop.index - 1 }} as previous_events
@@ -24,10 +31,14 @@
           {% endif %}
       {% endif %}
       where event_stream.event_type = '{{ step }}'
+      qualify row_number() over(partition by event_stream.user_id order by event_stream.event_date) = 1
+
     )
 
     , step_{{ loop.index }} as (
-      select count(distinct user_id) as unique_users 
+      select
+        count(distinct user_id) as unique_users,
+        avg(time_elapsed) as avg_time_elapsed
       from event_stream_step_{{ loop.index }}
     )  
 
@@ -35,7 +46,11 @@
 
   , event_funnel as (
     {% for step in steps %}
-      select '{{ step }}' as event_type, unique_users, {{ loop.index }} as step_index
+      select
+        '{{ step }}' as event_type,
+        unique_users,
+        avg_time_elapsed,
+        {{ loop.index }} as step_index
       from step_{{ loop.index }}
       {% if not loop.last %}
         union all
@@ -44,9 +59,12 @@
   )
 
   , final as (
-    select event_type
-      , unique_users, 1.0 * unique_users / nullif(first_value(unique_users) over(order by step_index), 0) as pct_conversion
-      , 1.0 * unique_users / nullif(lag(unique_users) over(order by step_index), 0) as pct_of_previous
+    select 
+      event_type,
+      unique_users,
+      avg_time_elapsed,
+      1.0 * unique_users / nullif(first_value(unique_users) over(order by step_index), 0) as pct_conversion,
+      1.0 * unique_users / nullif(lag(unique_users) over(order by step_index), 0) as pct_of_previous
     from event_funnel
   )
 
